@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Live Video OCR (English + Tamil)</title>
+  <title>Live Video OCR (English + Tamil) with Region Selection</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -12,6 +12,11 @@
       text-align: center;
     }
     h2 { color: #333; }
+    #video-container {
+      position: relative;
+      display: inline-block;
+      margin-top: 10px;
+    }
     video {
       width: 100%;
       max-height: 60vh;
@@ -19,7 +24,12 @@
       border: 2px solid #ccc;
       background: #000;
       object-fit: cover;
-      margin-top: 10px;
+    }
+    #overlay-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none; /* Default no interaction */
     }
     button, select {
       padding: 10px 14px;
@@ -45,7 +55,7 @@
   </style>
 </head>
 <body>
-  <h2>📷 Live Video OCR (English + Tamil)</h2>
+  <h2>📷 Live Video OCR (English + Tamil) with Region Selection</h2>
   <select id="facing">
     <option value="environment">Back Camera</option>
     <option value="user">Front Camera</option>
@@ -53,22 +63,244 @@
   <button id="start">Start Camera</button>
   <button id="stop" disabled>Stop</button>
   <button id="download" disabled>Download as CSV</button>
-  <video id="video" autoplay playsinline></video>
+  <button id="define-regions">Define Regions</button>
+  <button id="add-region" disabled>Add Region</button>
+  <select id="region-label" disabled>
+    <option value="">Select Label</option>
+    <option value="invoice_no">Invoice No</option>
+    <option value="skus">SKUs</option>
+    <option value="quantity">Quantity</option>
+    <option value="amount">Amount</option>
+  </select>
+  <select id="preset">
+    <option value="A">Preset A</option>
+    <option value="B">Preset B</option>
+    <option value="C">Preset C</option>
+  </select>
+  <button id="save-preset">Save to Preset</button>
+  <div id="video-container">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="overlay-canvas"></canvas>
+  </div>
   <div id="output">Point camera at clear text to start OCR...</div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
   <script>
     const video = document.getElementById('video');
+    const overlayCanvas = document.getElementById('overlay-canvas');
     const output = document.getElementById('output');
     const startBtn = document.getElementById('start');
     const stopBtn = document.getElementById('stop');
     const downloadBtn = document.getElementById('download');
+    const defineRegionsBtn = document.getElementById('define-regions');
+    const addRegionBtn = document.getElementById('add-region');
+    const regionLabelSelect = document.getElementById('region-label');
+    const presetSelect = document.getElementById('preset');
+    const savePresetBtn = document.getElementById('save-preset');
     const facing = document.getElementById('facing');
 
     let stream = null;
     let running = false;
-    let textData = [['Timestamp', 'Recognized Text']];
+    let textData = [['Timestamp', 'Invoice No', 'SKUs', 'Quantity', 'Amount']];
+    let defineMode = false;
+    let addingRegion = false;
+    let regions = []; // Array of {left, top, width, height, label}
+    let presets = { A: [], B: [], C: [] };
+    let currentPreset = 'A';
+    let selectedRegionIndex = -1;
+    let dragTL = dragBL = dragTR = dragBR = dragWhole = false;
+    let mouseX, mouseY, startX, startY;
+    let worker = null;
+
+    // Initialize overlay canvas
+    function initOverlay() {
+      overlayCanvas.width = video.videoWidth;
+      overlayCanvas.height = video.videoHeight;
+      drawRegions();
+    }
+
+    // Draw all regions on overlay
+    function drawRegions() {
+      const ctx = overlayCanvas.getContext('2d');
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      regions.forEach((r, i) => {
+        ctx.strokeStyle = selectedRegionIndex === i ? 'red' : 'blue';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(r.left, r.top, r.width, r.height);
+        ctx.fillStyle = 'yellow';
+        ctx.font = '12px Arial';
+        ctx.fillText(r.label || 'Unlabeled', r.left, r.top - 5);
+        // Draw handles
+        drawHandle(ctx, r.left, r.top);
+        drawHandle(ctx, r.left + r.width, r.top);
+        drawHandle(ctx, r.left, r.top + r.height);
+        drawHandle(ctx, r.left + r.width, r.top + r.height);
+      });
+    }
+
+    function drawHandle(ctx, x, y) {
+      ctx.fillStyle = 'white';
+      ctx.fillRect(x - 5, y - 5, 10, 10);
+      ctx.strokeRect(x - 5, y - 5, 10, 10);
+    }
+
+    // Mouse/touch events for overlay
+    function mouseDown(e) {
+      const pos = getMousePos(overlayCanvas, e);
+      mouseX = pos.x;
+      mouseY = pos.y;
+      startX = mouseX;
+      startY = mouseY;
+
+      if (addingRegion) {
+        // Start drawing new region
+        const newRect = { left: mouseX, top: mouseY, width: 0, height: 0, label: '' };
+        regions.push(newRect);
+        selectedRegionIndex = regions.length - 1;
+        dragBR = true; // Drag bottom right to size
+        return;
+      }
+
+      // Check for selected region
+      selectedRegionIndex = -1;
+      for (let i = regions.length - 1; i >= 0; i--) {
+        const r = regions[i];
+        // Check handles
+        if (checkCloseEnough(mouseX, r.left, 10) && checkCloseEnough(mouseY, r.top, 10)) {
+          dragTL = true;
+          selectedRegionIndex = i;
+          break;
+        } else if (checkCloseEnough(mouseX, r.left + r.width, 10) && checkCloseEnough(mouseY, r.top, 10)) {
+          dragTR = true;
+          selectedRegionIndex = i;
+          break;
+        } else if (checkCloseEnough(mouseX, r.left, 10) && checkCloseEnough(mouseY, r.top + r.height, 10)) {
+          dragBL = true;
+          selectedRegionIndex = i;
+          break;
+        } else if (checkCloseEnough(mouseX, r.left + r.width, 10) && checkCloseEnough(mouseY, r.top + r.height, 10)) {
+          dragBR = true;
+          selectedRegionIndex = i;
+          break;
+        } else if (checkInRect(mouseX, mouseY, r)) {
+          dragWhole = true;
+          selectedRegionIndex = i;
+          break;
+        }
+      }
+      drawRegions();
+    }
+
+    function mouseMove(e) {
+      if (!defineMode) return;
+      const pos = getMousePos(overlayCanvas, e);
+      mouseX = pos.x;
+      mouseY = pos.y;
+
+      if (selectedRegionIndex === -1) return;
+
+      const r = regions[selectedRegionIndex];
+      if (dragWhole) {
+        r.left += mouseX - startX;
+        r.top += mouseY - startY;
+      } else if (dragTL) {
+        r.width -= mouseX - startX;
+        r.height -= mouseY - startY;
+        r.left = mouseX;
+        r.top = mouseY;
+      } else if (dragTR) {
+        r.width += mouseX - startX;
+        r.height -= mouseY - startY;
+        r.top = mouseY;
+      } else if (dragBL) {
+        r.width -= mouseX - startX;
+        r.height += mouseY - startY;
+        r.left = mouseX;
+      } else if (dragBR) {
+        r.width += mouseX - startX;
+        r.height += mouseY - startY;
+      }
+
+      // Clamp to bounds and min size
+      r.left = Math.max(0, Math.min(r.left, overlayCanvas.width - r.width));
+      r.top = Math.max(0, Math.min(r.top, overlayCanvas.height - r.height));
+      r.width = Math.max(10, r.width);
+      r.height = Math.max(10, r.height);
+
+      startX = mouseX;
+      startY = mouseY;
+      drawRegions();
+    }
+
+    function mouseUp(e) {
+      dragTL = dragBL = dragTR = dragBR = dragWhole = false;
+      if (addingRegion) {
+        addingRegion = false;
+        addRegionBtn.disabled = false;
+        regionLabelSelect.disabled = false;
+        // Prompt for label
+        alert('Select label for the new region from the dropdown.');
+      }
+    }
+
+    function getMousePos(canvas, evt) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: evt.clientX - rect.left,
+        y: evt.clientY - rect.top
+      };
+    }
+
+    function checkCloseEnough(p1, p2, threshold = 10) {
+      return Math.abs(p1 - p2) < threshold;
+    }
+
+    function checkInRect(x, y, r) {
+      return x > r.left && x < r.left + r.width && y > r.top && y < r.top + r.height;
+    }
+
+    // Event listeners
+    overlayCanvas.addEventListener('mousedown', mouseDown);
+    overlayCanvas.addEventListener('mousemove', mouseMove);
+    overlayCanvas.addEventListener('mouseup', mouseUp);
+    // Add touch events similarly if needed
+
+    defineRegionsBtn.onclick = () => {
+      defineMode = !defineMode;
+      overlayCanvas.style.pointerEvents = defineMode ? 'auto' : 'none';
+      addRegionBtn.disabled = !defineMode;
+      regionLabelSelect.disabled = !defineMode;
+      defineRegionsBtn.textContent = defineMode ? 'Exit Define Mode' : 'Define Regions';
+      if (defineMode) initOverlay();
+      else drawRegions(); // Redraw if needed
+    };
+
+    addRegionBtn.onclick = () => {
+      addingRegion = true;
+      addRegionBtn.disabled = true;
+      output.textContent = 'Drag on the video to draw a new region.';
+    };
+
+    regionLabelSelect.onchange = () => {
+      if (selectedRegionIndex !== -1) {
+        regions[selectedRegionIndex].label = regionLabelSelect.value;
+        drawRegions();
+        regionLabelSelect.value = '';
+      }
+    };
+
+    presetSelect.onchange = () => {
+      currentPreset = presetSelect.value;
+      regions = presets[currentPreset] || [];
+      drawRegions();
+      output.textContent = `Loaded preset ${currentPreset}.`;
+    };
+
+    savePresetBtn.onclick = () => {
+      presets[currentPreset] = JSON.parse(JSON.stringify(regions)); // Deep copy
+      output.textContent = `Saved to preset ${currentPreset}.`;
+    };
 
     async function startCamera() {
       try {
@@ -82,6 +314,9 @@
 
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          initOverlay();
+        };
         startBtn.disabled = true;
         stopBtn.disabled = false;
         downloadBtn.disabled = true;
@@ -114,10 +349,9 @@
     }
 
     async function runLiveOCR() {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      
-      let worker;
+      const frameCanvas = document.createElement('canvas');
+      const frameCtx = frameCanvas.getContext('2d');
+
       try {
         worker = await Tesseract.createWorker('eng+tam');
         output.textContent = 'OCR engine loaded. Processing video...';
@@ -129,29 +363,52 @@
 
       while (running) {
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          frameCanvas.width = video.videoWidth;
+          frameCanvas.height = video.videoHeight;
+          frameCtx.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
 
-          // Preprocess image (grayscale)
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          // Preprocess (grayscale)
+          const imageData = frameCtx.getImageData(0, 0, frameCanvas.width, frameCanvas.height);
           for (let i = 0; i < imageData.data.length; i += 4) {
             const avg = (imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]) / 3;
             imageData.data[i] = imageData.data[i + 1] = imageData.data[i + 2] = avg;
           }
-          ctx.putImageData(imageData, 0, 0);
+          frameCtx.putImageData(imageData, 0, 0);
 
           output.textContent = 'Processing...';
           try {
-            const { data: { text } } = await worker.recognize(canvas);
-            const clean = text.trim();
-            if (clean) {
-              output.textContent = clean;
+            const results = {};
+            if (regions.length > 0) {
+              // OCR each region separately
+              for (const r of regions) {
+                const cropCanvas = document.createElement('canvas');
+                cropCanvas.width = r.width;
+                cropCanvas.height = r.height;
+                const cropCtx = cropCanvas.getContext('2d');
+                cropCtx.drawImage(frameCanvas, r.left, r.top, r.width, r.height, 0, 0, r.width, r.height);
+                const { data: { text } } = await worker.recognize(cropCanvas);
+                const clean = text.trim();
+                if (clean && r.label) {
+                  results[r.label] = clean;
+                }
+              }
               const timestamp = new Date().toLocaleString();
-              textData.push([timestamp, clean.replace(/"/g, '""')]);
+              const row = [timestamp, results.invoice_no || '', results.skus || '', results.quantity || '', results.amount || ''];
+              textData.push(row);
+              output.textContent = JSON.stringify(results, null, 2);
               downloadBtn.disabled = false;
             } else {
-              output.textContent = 'No text detected. Point camera at clear text.';
+              // Fallback to full frame if no regions
+              const { data: { text } } = await worker.recognize(frameCanvas);
+              const clean = text.trim();
+              if (clean) {
+                output.textContent = clean;
+                const timestamp = new Date().toLocaleString();
+                textData.push([timestamp, '', clean, '', '']); // Put in SKUs as example
+                downloadBtn.disabled = false;
+              } else {
+                output.textContent = 'No text detected. Point camera at clear text.';
+              }
             }
           } catch (e) {
             console.error('OCR error:', e);
@@ -162,13 +419,13 @@
       }
 
       await worker.terminate();
-      output.textContent = 'OCR stopped. Point camera at clear text to start again.';
+      output.textContent = 'OCR stopped.';
     }
 
     function downloadText() {
       if (textData.length <= 1) return alert('No text recognized yet.');
-      const csv = textData.map(r => `"${r[0]}","${r[1]}"`).join('\n');
-      const bom = '\uFEFF'; // UTF-8 BOM
+      const csv = textData.map(r => r.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
+      const bom = '\uFEFF';
       const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -179,6 +436,8 @@
     startBtn.onclick = startCamera;
     stopBtn.onclick = stopCamera;
     downloadBtn.onclick = downloadText;
+
+    // Load presets if saved (e.g., from localStorage, but omitted for simplicity)
   </script>
 </body>
 </html>
