@@ -3,10 +3,17 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Live Camera OCR</title>
+<title>Live Video OCR (English + Tamil)</title>
 <style>
-  body { font-family: sans-serif; background: #fafafa; margin: 10px; }
-  h2 { text-align: center; }
+  body {
+    font-family: Arial, sans-serif;
+    background: #f3f3f3;
+    margin: 10px;
+    text-align: center;
+  }
+  h2 {
+    color: #333;
+  }
   video {
     width: 100%;
     max-height: 60vh;
@@ -14,91 +21,126 @@
     border: 2px solid #ccc;
     background: #000;
     object-fit: cover;
+    margin-top: 10px;
   }
   button, select {
     padding: 10px 14px;
-    margin: 5px;
+    margin: 6px;
     border: none;
     border-radius: 6px;
     background: #007bff;
-    color: #fff;
+    color: white;
     font-size: 16px;
+    cursor: pointer;
+  }
+  button:disabled {
+    background: #aaa;
   }
   #output {
     background: #fff;
     border-radius: 8px;
     padding: 10px;
-    min-height: 100px;
     margin-top: 10px;
     white-space: pre-wrap;
+    text-align: left;
+    min-height: 100px;
   }
 </style>
 </head>
 <body>
 
-<h2>📖 Live Video OCR</h2>
+<h2>📷 Live Video OCR (English + Tamil)</h2>
+
 <select id="facing">
   <option value="environment">Back Camera</option>
   <option value="user">Front Camera</option>
 </select>
-<button id="start">Start</button>
+
+<button id="start">Start Camera</button>
 <button id="stop" disabled>Stop</button>
+<button id="download" disabled>Download Text</button>
 
 <video id="video" autoplay playsinline></video>
+
 <div id="output">Text will appear here...</div>
 
+<!-- Load Tesseract.js (OCR Engine) -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+
 <script>
 const video = document.getElementById('video');
 const output = document.getElementById('output');
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
+const downloadBtn = document.getElementById('download');
 const facing = document.getElementById('facing');
+
 let stream = null;
 let running = false;
+let allText = '';
 
 async function startCamera() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing.value },
-      audio: false
+      video: { facingMode: facing.value }, audio: false
     });
     video.srcObject = stream;
     startBtn.disabled = true;
     stopBtn.disabled = false;
+    downloadBtn.disabled = true;
     running = true;
     runLiveOCR();
   } catch (err) {
-    alert("Camera error: " + err.message);
+    alert("Camera Error: " + err.message);
   }
 }
 
 function stopCamera() {
   running = false;
-  if (stream) stream.getTracks().forEach(t => t.stop());
-  stream = null;
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  downloadBtn.disabled = false;
 }
 
 async function runLiveOCR() {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  const worker = await Tesseract.createWorker('eng');
+  
+  // Load OCR worker (English + Tamil)
+  const worker = await Tesseract.createWorker(['eng', 'tam']);
+  
   while (running) {
     if (video.readyState === video.HAVE_ENOUGH_DATA) {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const { data: { text } } = await worker.recognize(canvas);
-      output.textContent = text.trim() || "(No text detected)";
+      const clean = text.trim();
+      if (clean) {
+        output.textContent = clean;
+        allText += clean + "\n";
+      }
     }
   }
+
   await worker.terminate();
+}
+
+function downloadText() {
+  const textData = allText || output.textContent;
+  const blob = new Blob([textData], { type: "text/plain" });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = "recognized_text.txt";
+  a.click();
 }
 
 startBtn.onclick = startCamera;
 stopBtn.onclick = stopCamera;
+downloadBtn.onclick = downloadText;
 </script>
 
 </body>
