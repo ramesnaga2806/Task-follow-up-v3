@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Live Camera OCR</title>
+<style>
+  body { font-family: sans-serif; background: #fafafa; margin: 10px; }
+  h2 { text-align: center; }
+  video {
+    width: 100%;
+    max-height: 60vh;
+    border-radius: 10px;
+    border: 2px solid #ccc;
+    background: #000;
+    object-fit: cover;
+  }
+  button, select {
+    padding: 10px 14px;
+    margin: 5px;
+    border: none;
+    border-radius: 6px;
+    background: #007bff;
+    color: #fff;
+    font-size: 16px;
+  }
+  #output {
+    background: #fff;
+    border-radius: 8px;
+    padding: 10px;
+    min-height: 100px;
+    margin-top: 10px;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+
+<h2>📖 Live Video OCR</h2>
+<select id="facing">
+  <option value="environment">Back Camera</option>
+  <option value="user">Front Camera</option>
+</select>
+<button id="start">Start</button>
+<button id="stop" disabled>Stop</button>
+
+<video id="video" autoplay playsinline></video>
+<div id="output">Text will appear here...</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+<script>
+const video = document.getElementById('video');
+const output = document.getElementById('output');
+const startBtn = document.getElementById('start');
+const stopBtn = document.getElementById('stop');
+const facing = document.getElementById('facing');
+let stream = null;
+let running = false;
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing.value },
+      audio: false
+    });
+    video.srcObject = stream;
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    running = true;
+    runLiveOCR();
+  } catch (err) {
+    alert("Camera error: " + err.message);
+  }
+}
+
+function stopCamera() {
+  running = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
+async function runLiveOCR() {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const worker = await Tesseract.createWorker('eng');
+  while (running) {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const { data: { text } } = await worker.recognize(canvas);
+      output.textContent = text.trim() || "(No text detected)";
+    }
+  }
+  await worker.terminate();
+}
+
+startBtn.onclick = startCamera;
+stopBtn.onclick = stopCamera;
+</script>
+
+</body>
+</html>
