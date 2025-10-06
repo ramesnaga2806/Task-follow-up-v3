@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Live Video OCR (English + Tamil)</title>
+  <title>Live Video OCR (English + Numbers)</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -46,10 +46,16 @@
       min-height: 100px;
       font-size: 14px;
     }
+    #debugCanvas {
+      display: block;
+      margin: 10px auto;
+      border: 1px solid #ccc;
+      max-width: 100%;
+    }
   </style>
 </head>
 <body>
-  <h2>📷 Live Video OCR (English + Tamil)</h2>
+  <h2>📷 Live Video OCR (English + Numbers)</h2>
   <select id="facing">
     <option value="environment">Back Camera</option>
     <option value="user">Front Camera</option>
@@ -58,7 +64,8 @@
   <button id="stop" disabled>Stop</button>
   <button id="download" disabled>Download as CSV</button>
   <video id="video" autoplay playsinline></video>
-  <div id="output">Point camera at clear text to start OCR...</div>
+  <canvas id="debugCanvas" style="display: none;"></canvas>
+  <div id="output">Point camera at clear, printed English text or numbers (e.g., "Hello World 123") to start OCR...</div>
 
   <!-- Load Tesseract.js (OCR Engine) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
@@ -66,6 +73,7 @@
   <script>
     const video = document.getElementById('video');
     const output = document.getElementById('output');
+    const debugCanvas = document.getElementById('debugCanvas');
     const startBtn = document.getElementById('start');
     const stopBtn = document.getElementById('stop');
     const downloadBtn = document.getElementById('download');
@@ -78,18 +86,24 @@
     async function startCamera() {
       try {
         output.textContent = 'Requesting camera access...';
-        console.log('Requesting camera access...');
+        console.log('Starting camera...');
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: facing.value, width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false
         });
         video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          console.log('Video metadata loaded, resolution:', video.videoWidth, 'x', video.videoHeight);
+          output.textContent = 'Camera started. Loading OCR engine...';
+          debugCanvas.style.display = 'block'; // Show debug canvas
+          debugCanvas.width = video.videoWidth / 2; // Smaller for display
+          debugCanvas.height = video.videoHeight / 2;
+        };
         startBtn.disabled = true;
         stopBtn.disabled = false;
         downloadBtn.disabled = true;
         running = true;
-        output.textContent = 'Camera started. Loading OCR engine...';
-        console.log('Camera started, video resolution:', video.videoWidth, 'x', video.videoHeight);
+        console.log('Camera ready, starting OCR...');
         runLiveOCR();
       } catch (err) {
         output.textContent = 'Camera Error: ' + err.message;
@@ -105,7 +119,8 @@
       startBtn.disabled = false;
       stopBtn.disabled = true;
       downloadBtn.disabled = textData.length <= 1;
-      output.textContent = textData.length > 1 ? output.textContent : 'No text recognized.';
+      debugCanvas.style.display = 'none';
+      output.textContent = textData.length > 1 ? output.textContent : 'No text recognized. Try "Hello World 123".';
       console.log('Camera stopped, textData length:', textData.length);
     }
 
@@ -113,22 +128,30 @@
       try {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
+        const debugCtx = debugCanvas.getContext('2d');
 
         // Initialize Tesseract worker
-        console.log('Initializing Tesseract worker for eng+tam...');
+        console.log('Creating Tesseract worker...');
         const worker = await Tesseract.createWorker();
-        await worker.loadLanguage(['eng', 'tam']);
-        await worker.initialize(['eng', 'tam']);
-        output.textContent = 'OCR engine loaded. Processing video frames...';
-        console.log('Tesseract worker initialized.');
+        console.log('Loading language: eng...');
+        await worker.loadLanguage('eng');
+        await worker.initialize('eng');
+        await worker.setParameters({
+          tessedit_char_whitelist: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?', // English and numbers
+          preserve_interword_spaces: '1'
+        });
+        output.textContent = 'OCR engine loaded. Point camera at printed text like "Hello World 123"...';
+        console.log('Tesseract worker initialized for eng.');
 
         while (running) {
-          if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            console.log('Capturing frame, canvas size:', canvas.width, 'x', canvas.height);
-            
+            // Update debug canvas
+            debugCtx.drawImage(video, 0, 0, debugCanvas.width, debugCanvas.height);
+            console.log('Processing frame, canvas size:', canvas.width, 'x', canvas.height);
+
             try {
               const { data: { text } } = await worker.recognize(canvas);
               const clean = text.trim();
@@ -138,7 +161,7 @@
                 textData.push([timestamp, clean.replace(/"/g, '""')]);
                 console.log('Recognized text:', clean);
               } else {
-                output.textContent = 'No text detected in this frame. Try adjusting the camera.';
+                output.textContent = 'No text detected. Use clear, printed English text or numbers (e.g., "Invoice 2025").';
                 console.log('No text detected in frame.');
               }
             } catch (recognitionErr) {
@@ -146,11 +169,10 @@
               console.error('OCR recognition error:', recognitionErr);
             }
           } else {
-            output.textContent = 'Video not ready. Waiting for camera...';
-            console.log('Video not ready, readyState:', video.readyState);
+            output.textContent = 'Video not ready (readyState: ' + video.readyState + '). Waiting...';
+            console.log('Video not ready, readyState:', video.readyState, 'videoWidth:', video.videoWidth);
           }
-          // Delay to reduce CPU usage (500ms for faster feedback)
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
         }
 
         await worker.terminate();
