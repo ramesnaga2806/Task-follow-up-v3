@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Live Video OCR (English + Numbers)</title>
+  <title>Live Video OCR (English + Tamil)</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -11,9 +11,7 @@
       margin: 10px;
       text-align: center;
     }
-    h2 {
-      color: #333;
-    }
+    h2 { color: #333; }
     video {
       width: 100%;
       max-height: 60vh;
@@ -33,9 +31,7 @@
       font-size: 16px;
       cursor: pointer;
     }
-    button:disabled {
-      background: #aaa;
-    }
+    button:disabled { background: #aaa; }
     #output {
       background: #fff;
       border-radius: 8px;
@@ -46,16 +42,10 @@
       min-height: 100px;
       font-size: 14px;
     }
-    #debugCanvas {
-      display: block;
-      margin: 10px auto;
-      border: 1px solid #ccc;
-      max-width: 100%;
-    }
   </style>
 </head>
 <body>
-  <h2>📷 Live Video OCR (English + Numbers)</h2>
+  <h2>📷 Live Video OCR (English + Tamil)</h2>
   <select id="facing">
     <option value="environment">Back Camera</option>
     <option value="user">Front Camera</option>
@@ -64,16 +54,13 @@
   <button id="stop" disabled>Stop</button>
   <button id="download" disabled>Download as CSV</button>
   <video id="video" autoplay playsinline></video>
-  <canvas id="debugCanvas" style="display: none;"></canvas>
-  <div id="output">Point camera at clear, printed English text or numbers (e.g., "Hello World 123") to start OCR...</div>
+  <div id="output">Point camera at clear text to start OCR...</div>
 
-  <!-- Load Tesseract.js (OCR Engine) -->
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
   <script>
     const video = document.getElementById('video');
     const output = document.getElementById('output');
-    const debugCanvas = document.getElementById('debugCanvas');
     const startBtn = document.getElementById('start');
     const stopBtn = document.getElementById('stop');
     const downloadBtn = document.getElementById('download');
@@ -81,33 +68,37 @@
 
     let stream = null;
     let running = false;
-    let textData = [['Timestamp', 'Recognized Text']]; // CSV header
+    let textData = [['Timestamp', 'Recognized Text']];
 
     async function startCamera() {
       try {
         output.textContent = 'Requesting camera access...';
-        console.log('Starting camera...');
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: facing.value, width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false
-        });
+        const constraints = { video: { facingMode: facing.value }, audio: false };
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        if (videoDevices.length === 0) {
+          throw new Error('No video input devices found.');
+        }
+
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
-        video.onloadedmetadata = () => {
-          console.log('Video metadata loaded, resolution:', video.videoWidth, 'x', video.videoHeight);
-          output.textContent = 'Camera started. Loading OCR engine...';
-          debugCanvas.style.display = 'block'; // Show debug canvas
-          debugCanvas.width = video.videoWidth / 2; // Smaller for display
-          debugCanvas.height = video.videoHeight / 2;
-        };
         startBtn.disabled = true;
         stopBtn.disabled = false;
         downloadBtn.disabled = true;
         running = true;
-        console.log('Camera ready, starting OCR...');
+        output.textContent = 'Camera started. Loading OCR engine...';
         runLiveOCR();
       } catch (err) {
-        output.textContent = 'Camera Error: ' + err.message;
-        console.error('Camera Error:', err);
+        let errorMsg = 'Camera Error: ' + err.message;
+        if (err.name === 'NotAllowedError') {
+          errorMsg = 'Camera access denied. Please grant camera permissions.';
+        } else if (err.name === 'NotFoundError') {
+          errorMsg = 'No camera found. Please ensure a camera is connected.';
+        } else if (err.name === 'NotReadableError') {
+          errorMsg = 'Camera is in use by another application.';
+        }
+        output.textContent = errorMsg;
+        console.error('Camera error:', err);
       }
     }
 
@@ -119,85 +110,70 @@
       startBtn.disabled = false;
       stopBtn.disabled = true;
       downloadBtn.disabled = textData.length <= 1;
-      debugCanvas.style.display = 'none';
-      output.textContent = textData.length > 1 ? output.textContent : 'No text recognized. Try "Hello World 123".';
-      console.log('Camera stopped, textData length:', textData.length);
+      if (textData.length <= 1) output.textContent = 'No text recognized.';
     }
 
     async function runLiveOCR() {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      let worker;
       try {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        const debugCtx = debugCanvas.getContext('2d');
-
-        // Initialize Tesseract worker
-        console.log('Creating Tesseract worker...');
-        const worker = await Tesseract.createWorker();
-        console.log('Loading language: eng...');
-        await worker.loadLanguage('eng');
-        await worker.initialize('eng');
-        await worker.setParameters({
-          tessedit_char_whitelist: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?', // English and numbers
-          preserve_interword_spaces: '1'
-        });
-        output.textContent = 'OCR engine loaded. Point camera at printed text like "Hello World 123"...';
-        console.log('Tesseract worker initialized for eng.');
-
-        while (running) {
-          if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            // Update debug canvas
-            debugCtx.drawImage(video, 0, 0, debugCanvas.width, debugCanvas.height);
-            console.log('Processing frame, canvas size:', canvas.width, 'x', canvas.height);
-
-            try {
-              const { data: { text } } = await worker.recognize(canvas);
-              const clean = text.trim();
-              if (clean) {
-                output.textContent = clean;
-                const timestamp = new Date().toISOString();
-                textData.push([timestamp, clean.replace(/"/g, '""')]);
-                console.log('Recognized text:', clean);
-              } else {
-                output.textContent = 'No text detected. Use clear, printed English text or numbers (e.g., "Invoice 2025").';
-                console.log('No text detected in frame.');
-              }
-            } catch (recognitionErr) {
-              output.textContent = 'OCR recognition error: ' + recognitionErr.message;
-              console.error('OCR recognition error:', recognitionErr);
-            }
-          } else {
-            output.textContent = 'Video not ready (readyState: ' + video.readyState + '). Waiting...';
-            console.log('Video not ready, readyState:', video.readyState, 'videoWidth:', video.videoWidth);
-          }
-          await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
-        }
-
-        await worker.terminate();
-        console.log('Tesseract worker terminated.');
-      } catch (err) {
-        output.textContent = 'OCR Setup Error: ' + err.message;
-        console.error('OCR Setup Error:', err);
+        worker = await Tesseract.createWorker('eng+tam');
+        output.textContent = 'OCR engine loaded. Processing video...';
+      } catch (e) {
+        output.textContent = 'Failed to load OCR engine: ' + e.message;
+        console.error('Worker initialization error:', e);
+        return;
       }
+
+      while (running) {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+          // Preprocess image (grayscale)
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          for (let i = 0; i < imageData.data.length; i += 4) {
+            const avg = (imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]) / 3;
+            imageData.data[i] = imageData.data[i + 1] = imageData.data[i + 2] = avg;
+          }
+          ctx.putImageData(imageData, 0, 0);
+
+          output.textContent = 'Processing...';
+          try {
+            const { data: { text } } = await worker.recognize(canvas);
+            const clean = text.trim();
+            if (clean) {
+              output.textContent = clean;
+              const timestamp = new Date().toLocaleString();
+              textData.push([timestamp, clean.replace(/"/g, '""')]);
+              downloadBtn.disabled = false;
+            } else {
+              output.textContent = 'No text detected. Point camera at clear text.';
+            }
+          } catch (e) {
+            console.error('OCR error:', e);
+            output.textContent = 'OCR processing error: ' + e.message;
+          }
+        }
+        await new Promise(r => setTimeout(r, 2000));
+      }
+
+      await worker.terminate();
+      output.textContent = 'OCR stopped. Point camera at clear text to start again.';
     }
 
     function downloadText() {
-      if (textData.length <= 1) {
-        alert('No text to download.');
-        console.log('Download attempted but no text available.');
-        return;
-      }
-      const csvContent = textData
-        .map(row => `"${row[0]}","${row[1]}"`)
-        .join('\n');
-      const blob = new Blob([csvContent], { type: 'text/csv' });
+      if (textData.length <= 1) return alert('No text recognized yet.');
+      const csv = textData.map(r => `"${r[0]}","${r[1]}"`).join('\n');
+      const bom = '\uFEFF'; // UTF-8 BOM
+      const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = 'recognized_text.csv';
       a.click();
-      console.log('CSV downloaded, rows:', textData.length);
     }
 
     startBtn.onclick = startCamera;
